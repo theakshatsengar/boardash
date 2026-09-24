@@ -1,8 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState, type FormEvent } from "react";
 import { motion } from "motion/react";
 import { FlutedGlass } from "@paper-design/shaders-react";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { useAuth } from "../lib/auth-context";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -25,21 +26,114 @@ function GoogleIcon() {
   );
 }
 
-function AppleIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="size-[18px]" fill="currentColor" aria-hidden="true">
-      <path d="M16.4 12.9c0-2.2 1.8-3.3 1.9-3.3-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.6.8-3.3.8-.7 0-1.7-.8-2.8-.8-1.5 0-2.8.8-3.6 2.2-1.5 2.6-.4 6.5 1.1 8.6.7 1 1.6 2.2 2.7 2.2 1.1 0 1.5-.7 2.8-.7 1.3 0 1.6.7 2.8.7 1.2 0 1.9-1 2.6-2 .8-1.2 1.2-2.3 1.2-2.4-.1 0-2.3-.9-2.3-3.6zM14.3 6.3c.6-.7 1-1.7.9-2.7-.9 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .1 2-.5 2.5-1.2z" />
-    </svg>
-  );
-}
+type Mode = "signin" | "signup" | "forgot";
 
 function AuthPage() {
-  const [mode, setMode] = useState<"signup" | "signin">("signin");
+  const navigate = useNavigate();
+  const {
+    session,
+    loading: authLoading,
+    isConfigured,
+    signInWithPassword,
+    signUpWithPassword,
+    signInWithGoogle,
+    resetPassword,
+  } = useAuth();
+
+  const [mode, setMode] = useState<Mode>("signin");
   const [showPassword, setShowPassword] = useState(false);
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
   const isSignup = mode === "signup";
+  const isForgot = mode === "forgot";
+
+  // Already signed in -> go to the dashboard.
+  useEffect(() => {
+    if (!authLoading && session) navigate({ to: "/" });
+  }, [authLoading, session, navigate]);
+
+  function switchMode(next: Mode) {
+    setMode(next);
+    setError(null);
+    setNotice(null);
+  }
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!isConfigured) {
+      setError("Supabase is not configured yet. Add your project URL and anon key to .env.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      if (isForgot) {
+        const { error: resetError } = await resetPassword(email);
+        if (resetError) setError(resetError.message);
+        else setNotice("Check your inbox for a password reset link.");
+        return;
+      }
+
+      if (isSignup) {
+        const { error: signUpError } = await signUpWithPassword(email, password, {
+          first_name: firstName,
+          last_name: lastName,
+          full_name: `${firstName} ${lastName}`.trim(),
+        });
+        if (signUpError) {
+          setError(signUpError.message);
+        } else {
+          setNotice("Account created. Check your email to confirm, then sign in.");
+          setMode("signin");
+        }
+        return;
+      }
+
+      const { error: signInError } = await signInWithPassword(email, password);
+      if (signInError) setError(signInError.message);
+      else navigate({ to: "/" });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleGoogle() {
+    if (!isConfigured) {
+      setError("Supabase is not configured yet. Add your project URL and anon key to .env.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    const { error: oauthError } = await signInWithGoogle();
+    if (oauthError) {
+      setError(oauthError.message);
+      setSubmitting(false);
+    }
+    // On success the browser redirects to Google, so no further work here.
+  }
 
   const inputClass =
-    "h-11 w-full rounded-lg border border-white/10 bg-white/[0.07] px-3.5 text-sm text-white outline-none transition-colors placeholder:text-white/40 focus:border-white/25";
+    "h-11 w-full rounded-lg border border-white/10 bg-white/[0.07] px-3.5 text-sm text-white outline-none transition-colors placeholder:text-white/40 focus:border-white/25 disabled:opacity-60";
+
+  const heading = isForgot
+    ? "Reset your password"
+    : isSignup
+      ? "Create your account"
+      : "Welcome back";
+  const subheading = isForgot
+    ? "Enter your email and we'll send you a reset link."
+    : isSignup
+      ? "Start tracking your workspace in minutes."
+      : "Sign in to continue to your workspace.";
+  const submitLabel = isForgot ? "Send reset link" : isSignup ? "Create account" : "Sign in";
 
   return (
     <section className="dark min-h-screen bg-[#050505] p-3 text-white [font-synthesis:none]">
@@ -56,101 +150,180 @@ function AuthPage() {
               <div className="mb-6 grid size-10 place-items-center rounded-md bg-white text-lg font-bold text-black">
                 A
               </div>
-              <h1 className="text-2xl font-semibold tracking-tight">
-                {isSignup ? "Create your account" : "Welcome back"}
-              </h1>
-              <p className="mt-1.5 text-sm text-white/50">
-                {isSignup
-                  ? "Start tracking your workspace in minutes."
-                  : "Sign in to continue to your workspace."}
-              </p>
+              <h1 className="text-2xl font-semibold tracking-tight">{heading}</h1>
+              <p className="mt-1.5 text-sm text-white/50">{subheading}</p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                className="flex h-11 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.07] text-sm font-medium transition-colors hover:bg-white/[0.12]"
-              >
-                <GoogleIcon /> Google
-              </button>
-              <button
-                type="button"
-                className="flex h-11 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.07] text-sm font-medium transition-colors hover:bg-white/[0.12]"
-              >
-                <AppleIcon /> Apple
-              </button>
-            </div>
+            {!isConfigured && (
+              <div className="mb-5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3.5 py-3 text-xs text-amber-200">
+                Supabase isn't configured. Add <code className="font-mono">VITE_SUPABASE_URL</code>{" "}
+                and <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> to your{" "}
+                <code className="font-mono">.env</code> file.
+              </div>
+            )}
 
-            <div className="my-6 flex items-center gap-4">
-              <div className="h-px flex-1 bg-white/10" />
-              <span className="text-xs uppercase tracking-wide text-white/40">or</span>
-              <div className="h-px flex-1 bg-white/10" />
-            </div>
+            {!isForgot && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleGoogle}
+                  disabled={submitting}
+                  className="flex h-11 w-full items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.07] text-sm font-medium transition-colors hover:bg-white/[0.12] disabled:opacity-60"
+                >
+                  <GoogleIcon /> Continue with Google
+                </button>
 
-            <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+                <div className="my-6 flex items-center gap-4">
+                  <div className="h-px flex-1 bg-white/10" />
+                  <span className="text-xs uppercase tracking-wide text-white/40">or</span>
+                  <div className="h-px flex-1 bg-white/10" />
+                </div>
+              </>
+            )}
+
+            <form className="space-y-4" onSubmit={handleSubmit}>
               {isSignup && (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-white/60">First name</label>
-                    <input className={inputClass} placeholder="Ada" />
+                    <input
+                      className={inputClass}
+                      placeholder="Ada"
+                      value={firstName}
+                      onChange={(e) => setFirstName(e.target.value)}
+                      autoComplete="given-name"
+                    />
                   </div>
                   <div className="space-y-1.5">
                     <label className="text-xs font-medium text-white/60">Last name</label>
-                    <input className={inputClass} placeholder="Lovelace" />
+                    <input
+                      className={inputClass}
+                      placeholder="Lovelace"
+                      value={lastName}
+                      onChange={(e) => setLastName(e.target.value)}
+                      autoComplete="family-name"
+                    />
                   </div>
                 </div>
               )}
 
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-white/60">Email</label>
-                <input type="email" className={inputClass} placeholder="you@company.com" />
+                <input
+                  type="email"
+                  required
+                  className={inputClass}
+                  placeholder="you@company.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-white/60">Password</label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    className={`${inputClass} pr-11`}
-                    placeholder="••••••••"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((s) => !s)}
-                    className="absolute right-1.5 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-md text-white/50 transition-colors hover:text-white"
-                    aria-label={showPassword ? "Hide password" : "Show password"}
-                  >
-                    {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                  </button>
+              {!isForgot && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-white/60">Password</label>
+                    {!isSignup && (
+                      <button
+                        type="button"
+                        onClick={() => switchMode("forgot")}
+                        className="text-xs text-white/50 transition-colors hover:text-white"
+                      >
+                        Forgot password?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      required
+                      minLength={6}
+                      className={`${inputClass} pr-11`}
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      autoComplete={isSignup ? "new-password" : "current-password"}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((s) => !s)}
+                      className="absolute right-1.5 top-1/2 grid size-8 -translate-y-1/2 place-items-center rounded-md text-white/50 transition-colors hover:text-white"
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                    >
+                      {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
 
               {isSignup && (
                 <label className="flex items-start gap-2.5 text-xs text-white/50">
-                  <input type="checkbox" className="mt-0.5 size-3.5 rounded border-white/20 bg-white/[0.07]" />
-                  <span>
-                    I agree to the Terms of Service and Privacy Policy.
-                  </span>
+                  <input
+                    type="checkbox"
+                    required
+                    className="mt-0.5 size-3.5 rounded border-white/20 bg-white/[0.07]"
+                  />
+                  <span>I agree to the Terms of Service and Privacy Policy.</span>
                 </label>
+              )}
+
+              {error && (
+                <p className="rounded-lg border border-red-500/30 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-200">
+                  {error}
+                </p>
+              )}
+              {notice && (
+                <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-xs text-emerald-200">
+                  {notice}
+                </p>
               )}
 
               <button
                 type="submit"
-                className="h-11 w-full rounded-lg bg-white text-sm font-semibold text-black transition-colors hover:bg-white/90"
+                disabled={submitting}
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-white text-sm font-semibold text-black transition-colors hover:bg-white/90 disabled:opacity-60"
               >
-                {isSignup ? "Create account" : "Sign in"}
+                {submitting && <Loader2 className="size-4 animate-spin" />}
+                {submitLabel}
               </button>
             </form>
 
             <p className="mt-6 text-center text-sm text-white/50">
-              {isSignup ? "Already have an account?" : "Don't have an account?"}{" "}
-              <button
-                type="button"
-                onClick={() => setMode(isSignup ? "signin" : "signup")}
-                className="font-medium text-white underline-offset-4 hover:underline"
-              >
-                {isSignup ? "Sign in" : "Sign up"}
-              </button>
+              {isForgot ? (
+                <>
+                  Remembered it?{" "}
+                  <button
+                    type="button"
+                    onClick={() => switchMode("signin")}
+                    className="font-medium text-white underline-offset-4 hover:underline"
+                  >
+                    Back to sign in
+                  </button>
+                </>
+              ) : isSignup ? (
+                <>
+                  Already have an account?{" "}
+                  <button
+                    type="button"
+                    onClick={() => switchMode("signin")}
+                    className="font-medium text-white underline-offset-4 hover:underline"
+                  >
+                    Sign in
+                  </button>
+                </>
+              ) : (
+                <>
+                  Don't have an account?{" "}
+                  <button
+                    type="button"
+                    onClick={() => switchMode("signup")}
+                    className="font-medium text-white underline-offset-4 hover:underline"
+                  >
+                    Sign up
+                  </button>
+                </>
+              )}
             </p>
           </motion.div>
         </div>
